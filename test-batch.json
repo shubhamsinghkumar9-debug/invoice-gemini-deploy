@@ -1,0 +1,25 @@
+{
+  "message": {
+    "messageId": "invoice-hold-test-001",
+    "parts": [
+      {
+        "mediaType": "application/vnd.ga5.invoice-claim-batch+json",
+        "data": {
+          "batchId": "synthetic-batch-001",
+          "policyRevision": "v1",
+          "packages": [
+            {
+              "packageId": "invoice-hold-001",
+              "documents": [
+                {
+                  "type": "controlling_case",
+                  "text": "Controlling facts for this fictional invoice: Vendor Acme Supplies, invoice INV-1001, amount INR 1500.00. The invoice and purchase order agree, the invoice has not been paid, and the goods receipt is recorded. Bank account verification is pending and must finish before payment. [INV-1001] [PO-1001] [REC-1001]"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
