@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: invoice-action-agent-gemini
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.5-flash-lite
+      - key: A2A_BEARER_TOKEN
+        generateValue: true
+      - key: A2A_BASE_URL
+        sync: false
+      - key: SQLITE_PATH
+        value: state.db
