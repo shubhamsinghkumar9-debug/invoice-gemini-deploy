@@ -4,7 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 import traceback
 
-BASE_URL = os.getenv("A2A_BASE_URL", "").rstrip("/") + "/a2a/" if os.getenv("A2A_BASE_URL", "").strip() else ""
+BASE_URL = os.getenv("A2A_BASE_URL", "").strip().rstrip("/")
 LLM_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 LLM_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 LLM_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
@@ -58,13 +58,25 @@ def save(task, principal):
     db.execute("INSERT OR REPLACE INTO tasks VALUES(?,?,?)", (task["id"], principal, json.dumps(task)))
 
 # ---------- public Agent Card ----------
+@app_Q2.get("/")
+def root():
+    # Friendly root response; the A2A protocol endpoint is /message:send.
+    return reply({
+        "name": "Invoice Action Agent",
+        "status": "ok",
+        "health": "/health",
+        "agent_card": "/.well-known/agent-card.json",
+        "message_endpoint": "/message:send",
+    })
+
 @app_Q2.get("/health")
 def health():
     return reply({"status": "ok", "ai_configured": bool(LLM_KEY), "model": LLM_MODEL})
 
 @app_Q2.get("/.well-known/agent-card.json")
 def card(req: Request):
-    public_base = BASE_URL or str(req.base_url).rstrip("/") + "/a2a/"
+    # The evaluator submits requests at the service root, so advertise that same base URL.
+    public_base = (BASE_URL or str(req.base_url).rstrip("/")) + "/"
     return reply({
         "name": "Invoice Action Agent",
         "description": "Reads invoice packages, proposes safe business actions with evidence, executes only approved ones.",
@@ -259,15 +271,21 @@ def proposal(p, d, policy):
             "evidenceRefs": r, "rationale": rationale}
 
 # ---------- message:send ----------
-@app_Q2.post("/a2a/message:send")
+@app_Q2.post("/message:send")
+@app_Q2.post("/a2a/message:send")  # backward-compatible alias
 async def message_send(req: Request):
     principal, bad = gate(req, post=True)
     if bad: return bad
     try:
-        body = await req.json(); msg = body["message"]; mid = msg["messageId"]
-        assert isinstance(msg["parts"], list)
-    except Exception:
-        return err(400, "INVALID_REQUEST")
+        body = await req.json()
+        msg = body["message"]
+        mid = msg["messageId"]
+        if not isinstance(mid, str) or not mid.strip():
+            return err(400, "INVALID_REQUEST", "message.messageId must be a non-empty string")
+        if not isinstance(msg.get("parts"), list) or not msg["parts"]:
+            return err(400, "INVALID_REQUEST", "message.parts must be a non-empty array")
+    except (ValueError, TypeError, KeyError):
+        return err(400, "INVALID_REQUEST", "Expected a JSON body containing message.messageId and message.parts")
     h = sha(canon(msg))                         # configuration is ignored on purpose
     lock = key_locks.setdefault((principal, mid), asyncio.Lock())
     async with lock:
@@ -279,10 +297,20 @@ async def message_send(req: Request):
         part = msg["parts"][0]
         if msg.get("taskId"):
             return continuation(principal, msg, part, mid, h)
-        if part.get("mediaType") != BATCH_T: return err(400, "INVALID_REQUEST")
-        data = part["data"]; pkgs = data["packages"]
-        decisions = await decide(data["policyRevision"], pkgs)       # the only AI call
-        props = [proposal(p, decisions[p["packageId"]], data["policyRevision"]) for p in pkgs]
+        if part.get("mediaType") != BATCH_T:
+            return err(400, "INVALID_REQUEST", f"First part mediaType must be {BATCH_T}")
+        data = part.get("data")
+        if not isinstance(data, dict) or not isinstance(data.get("packages"), list):
+            return err(400, "INVALID_REQUEST", "Batch data must include a packages array")
+        if not isinstance(data.get("batchId"), str) or not data["batchId"]:
+            return err(400, "INVALID_REQUEST", "Batch data must include batchId")
+        if not isinstance(data.get("policyRevision"), (str, int, float)):
+            return err(400, "INVALID_REQUEST", "Batch data must include policyRevision")
+        for package in data["packages"]:
+            if not isinstance(package, dict) or not isinstance(package.get("packageId"), str) or not package["packageId"]:
+                return err(400, "INVALID_REQUEST", "Every package must have a non-empty packageId")
+        decisions = await decide(data["policyRevision"], data["packages"])       # the only AI call
+        props = [proposal(p, decisions[p["packageId"]], data["policyRevision"]) for p in data["packages"]]
         tid, cid = str(uuid.uuid4()), str(uuid.uuid4())
         task = {"id": tid, "contextId": cid,
                 "status": {"state": "TASK_STATE_INPUT_REQUIRED", "timestamp": now()},
@@ -327,7 +355,8 @@ def continuation(principal, msg, part, mid, h):
         return reply({"task": task})
 
 # ---------- reads, list, cancel (NO model calls) ----------
-@app_Q2.get("/a2a/tasks/{tid}")
+@app_Q2.get("/tasks/{tid}")
+@app_Q2.get("/a2a/tasks/{tid}")  # backward-compatible alias
 def get_task(tid: str, req: Request):
     principal, bad = gate(req)
     if bad: return bad
@@ -336,7 +365,8 @@ def get_task(tid: str, req: Request):
 
 MAX_LIST_BYTES = 350_000
 
-@app_Q2.get("/a2a/tasks")
+@app_Q2.get("/tasks")
+@app_Q2.get("/a2a/tasks")  # backward-compatible alias
 def list_tasks(req: Request):
     principal, bad = gate(req)
     if bad: return bad
@@ -354,7 +384,8 @@ def list_tasks(req: Request):
         size += n
     return reply({"tasks": tasks})
 
-@app_Q2.post("/a2a/tasks/{tid}:cancel")
+@app_Q2.post("/tasks/{tid}:cancel")
+@app_Q2.post("/a2a/tasks/{tid}:cancel")  # backward-compatible alias
 def cancel(tid: str, req: Request):
     principal, bad = gate(req)
     if bad: return bad
